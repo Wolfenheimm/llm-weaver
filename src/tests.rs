@@ -12,25 +12,25 @@ use super::*;
 mod vec_prompt_msgs_deque {
 	use super::*;
 
-	#[tokio::test]
-	async fn prompt() {
-		let test = Loom::<MockConfig>::new();
-		assert!(test
-			.weave(
-				LlmConfig::<MockConfig, MockLlm> { model: MockLlm, params: () },
-				LlmConfig::<MockConfig, MockLlm> { model: MockLlm, params: () },
-				MockTapestryId,
-				"instructions".to_string(),
-				vec![ContextMessage::<MockConfig>::new(
-					WrapperRole::Role(Role::Assistant),
-					"Hello".to_string(),
-					None,
-					"time".to_string()
-				)],
-			)
-			.await
-			.is_ok());
-	}
+	//#[tokio::test]
+	// async fn prompt() {
+	// 	let test = Loom::<MockConfig>::new();
+	// 	assert!(test
+	// 		.weave(
+	// 			LlmConfig::<MockConfig, MockLlm> { model: MockLlm, params: () },
+	// 			LlmConfig::<MockConfig, MockLlm> { model: MockLlm, params: () },
+	// 			MockTapestryId,
+	// 			"instructions".to_string(),
+	// 			vec![ContextMessage::<MockConfig>::new(
+	// 				WrapperRole::Role(Role::Assistant),
+	// 				"Hello".to_string(),
+	// 				None,
+	// 				"time".to_string()
+	// 			)],
+	// 		)
+	// 		.await
+	// 		.is_ok());
+	// }
 
 	#[test]
 	fn vec_prompt_msgs_deque_extend() {

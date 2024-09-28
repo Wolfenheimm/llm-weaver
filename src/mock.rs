@@ -3,10 +3,18 @@ use std::fmt::Formatter;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use tiktoken_rs::p50k_base;
-
-use crate::*;
+use types::LlmErrorWrapper;
 
 use self::types::StorageError;
+use crate::*;
+use thiserror::Error;
+
+// Define a custom PromptError for MockLlm
+#[derive(Debug, Error, Clone, PartialEq)]
+pub enum MockPromptError {
+	#[error("Unknown error: {0}")]
+	UnknownError(String),
+}
 
 pub struct MockChest;
 
@@ -23,7 +31,7 @@ impl TapestryChestHandler<MockConfig> for MockChest {
 		_tapestry_id: &TID,
 		_tapestry_fragment: TapestryFragment<MockConfig>,
 		_increment: bool,
-	) -> crate::Result<u64> {
+	) -> crate::Result<u64, Self::Error> {
 		Ok(0)
 	}
 
@@ -31,14 +39,14 @@ impl TapestryChestHandler<MockConfig> for MockChest {
 		&self,
 		_tapestry_id: TID,
 		_metadata: M,
-	) -> crate::Result<()> {
+	) -> crate::Result<(), Self::Error> {
 		Ok(())
 	}
 
 	async fn get_instance_index<TID: TapestryId>(
 		&self,
 		_tapestry_id: TID,
-	) -> crate::Result<Option<u16>> {
+	) -> crate::Result<Option<u16>, Self::Error> {
 		Ok(Some(0))
 	}
 
@@ -46,18 +54,21 @@ impl TapestryChestHandler<MockConfig> for MockChest {
 		&self,
 		_tapestry_id: TID,
 		_instance: Option<u64>,
-	) -> crate::Result<Option<TapestryFragment<MockConfig>>> {
+	) -> crate::Result<Option<TapestryFragment<MockConfig>>, Self::Error> {
 		Ok(Some(TapestryFragment { context_tokens: 0, context_messages: vec![] }))
 	}
 
 	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned>(
 		&self,
 		_tapestry_id: TID,
-	) -> crate::Result<Option<M>> {
+	) -> crate::Result<Option<M>, Self::Error> {
 		Ok(Some(serde_json::from_str("{}").unwrap()))
 	}
 
-	async fn delete_tapestry<TID: TapestryId>(&self, _tapestry_id: TID) -> crate::Result<()> {
+	async fn delete_tapestry<TID: TapestryId>(
+		&self,
+		_tapestry_id: TID,
+	) -> crate::Result<(), Self::Error> {
 		Ok(())
 	}
 
@@ -65,7 +76,7 @@ impl TapestryChestHandler<MockConfig> for MockChest {
 		&self,
 		_tapestry_id: TID,
 		_instance: Option<u64>,
-	) -> crate::Result<()> {
+	) -> crate::Result<(), Self::Error> {
 		Ok(())
 	}
 }
@@ -87,11 +98,38 @@ impl Config for MockConfig {
 	type PromptModel = MockLlm;
 	type SummaryModel = MockLlm;
 	type Chest = MockChest;
+	type LlmError = MockPromptError; // Add this line
 
 	fn convert_prompt_tokens_to_summary_model_tokens(
 		tokens: PromptModelTokens<Self>,
 	) -> SummaryModelTokens<Self> {
 		tokens
+	}
+
+	fn convert_llm_error(
+		error: LoomError<<Self::PromptModel as Llm<Self>>::PromptError>,
+	) -> LoomError<Self::LlmError> {
+		match error {
+			LoomError::Llm(LlmErrorWrapper(prompt_error)) =>
+				LoomError::Llm(LlmErrorWrapper(prompt_error)),
+			LoomError::Storage(storage_error) => LoomError::Storage(storage_error),
+			LoomError::UnknownError(err_str) => LoomError::UnknownError(err_str),
+			LoomError::MaxCompletionTokensZero =>
+				LoomError::UnknownError("Max completion tokens is zero".to_string()),
+		}
+	}
+
+	fn convert_llm_summary_error(
+		error: LoomError<<Self::SummaryModel as Llm<Self>>::PromptError>,
+	) -> LoomError<Self::LlmError> {
+		match error {
+			LoomError::Llm(LlmErrorWrapper(summary_error)) =>
+				LoomError::Llm(LlmErrorWrapper(summary_error)),
+			LoomError::Storage(storage_error) => LoomError::Storage(storage_error),
+			LoomError::UnknownError(err_str) => LoomError::UnknownError(err_str),
+			LoomError::MaxCompletionTokensZero =>
+				LoomError::UnknownError("Max completion tokens is zero".to_string()),
+		}
 	}
 }
 
@@ -104,16 +142,17 @@ impl Llm<MockConfig> for MockLlm {
 	type Parameters = ();
 	type Request = MockLlmRequest;
 	type Response = MockLlmResponse;
+	type PromptError = MockPromptError;
 
-	fn count_tokens(content: &str) -> Result<Self::Tokens> {
+	fn count_tokens(content: &str) -> Result<Self::Tokens, Self::PromptError> {
 		let bpe = p50k_base().unwrap();
 		let tokens = bpe.encode_with_special_tokens(&content.to_string());
 
 		tokens.len().try_into().map_err(|_| {
-			LoomError::from(WeaveError::BadConfig(format!(
+			LoomError::UnknownError(format!(
 				"Number of tokens exceeds max tokens for model: {}",
 				content
-			)))
+			))
 			.into()
 		})
 	}
@@ -133,7 +172,7 @@ impl Llm<MockConfig> for MockLlm {
 		_msgs: Vec<Self::Request>,
 		_params: &Self::Parameters,
 		_max_tokens: Self::Tokens,
-	) -> Result<Self::Response> {
+	) -> Result<Self::Response, Self::PromptError> {
 		Ok(MockLlmResponse {})
 	}
 

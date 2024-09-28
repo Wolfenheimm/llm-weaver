@@ -41,7 +41,7 @@ pub trait TapestryChestHandler<T: Config> {
 		tapestry_id: &TID,
 		tapestry_fragment: TapestryFragment<T>,
 		increment: bool,
-	) -> crate::Result<u64>;
+	) -> crate::StorageResult<u64>;
 	/// Save tapestry metadata.
 	///
 	/// Based on application use cases, you can add aditional data for a given [`TapestryId`]
@@ -49,14 +49,14 @@ pub trait TapestryChestHandler<T: Config> {
 		&self,
 		tapestry_id: TID,
 		metadata: M,
-	) -> crate::Result<()>;
+	) -> crate::StorageResult<()>;
 	/// Retrieves the index of a tapestry.
 	///
 	/// Returns None if the tapestry does not exist.
 	async fn get_instance_index<TID: TapestryId>(
 		&self,
 		tapestry_id: TID,
-	) -> crate::Result<Option<u16>>;
+	) -> crate::StorageResult<Option<u16>>;
 	/// Retrieves the last tapestry fragment, or a fragment at a specified instance.
 	///
 	/// # Parameters
@@ -73,18 +73,18 @@ pub trait TapestryChestHandler<T: Config> {
 		&self,
 		tapestry_id: TID,
 		instance: Option<u64>,
-	) -> crate::Result<Option<TapestryFragment<T>>>;
+	) -> crate::StorageResult<Option<TapestryFragment<T>>>;
 	/// Retrieves the last tapestry metadata, or a metadata at a specified instance.
 	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned + Send + Sync>(
 		&self,
 		tapestry_id: TID,
-	) -> crate::Result<Option<M>>;
+	) -> crate::StorageResult<Option<M>>;
 	/// Deletes a tapestry and all its instances.
-	async fn delete_tapestry<TID: TapestryId>(&self, tapestry_id: TID) -> crate::Result<()>;
+	async fn delete_tapestry<TID: TapestryId>(&self, tapestry_id: TID) -> crate::StorageResult<()>;
 	/// Deletes a tapestry fragment.
 	async fn delete_tapestry_fragment<TID: TapestryId>(
 		&self,
 		tapestry_id: TID,
 		instance: Option<u64>,
-	) -> crate::Result<()>;
+	) -> crate::StorageResult<()>;
 }

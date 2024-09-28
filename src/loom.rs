@@ -5,8 +5,8 @@ use tracing::{debug, error, instrument, trace};
 
 use crate::{
 	types::{
-		LoomError, PromptModelRequest, PromptModelTokens, SummaryModelTokens, VecPromptMsgsDeque,
-		WeaveError, WrapperRole, ASSISTANT_ROLE, SYSTEM_ROLE,
+		LoomError, PromptModelRequest, PromptModelTokens, StorageError, SummaryModelTokens,
+		VecPromptMsgsDeque, WrapperRole, ASSISTANT_ROLE, SYSTEM_ROLE,
 	},
 	Config, ContextMessage, Llm, LlmConfig, TapestryChestHandler, TapestryFragment, TapestryId,
 };
@@ -21,10 +21,21 @@ pub struct Loom<T: Config> {
 	_phantom: PhantomData<T>,
 }
 
-impl<T: Config> Loom<T> {
+impl<T: Config> Loom<T>
+where
+	LoomError<<T as Config>::LlmError>: From<LoomError<StorageError>>,
+	LoomError<<T as Config>::LlmError>:
+		From<LoomError<<<T as Config>::PromptModel as Llm<T>>::PromptError>>,
+{
 	/// Creates a new instance of `Loom`.
 	pub fn new() -> Self {
 		Self { chest: <T::Chest as TapestryChestHandler<T>>::new(), _phantom: PhantomData }
+	}
+
+	fn convert_prompt_error(
+		error: LoomError<<T::PromptModel as Llm<T>>::PromptError>,
+	) -> LoomError<T::LlmError> {
+		T::convert_llm_error(error)
 	}
 
 	/// Prompt LLM Weaver for a response for [`TapestryId`].
@@ -52,7 +63,8 @@ impl<T: Config> Loom<T> {
 		tapestry_id: TID,
 		instructions: String,
 		mut msgs: Vec<ContextMessage<T>>,
-	) -> Result<(<<T as Config>::PromptModel as Llm<T>>::Response, u64, bool), LoomError> {
+	) -> Result<(<<T as Config>::PromptModel as Llm<T>>::Response, u64, bool), LoomError<T::LlmError>>
+	{
 		let instructions_ctx_msg =
 			Self::build_context_message(SYSTEM_ROLE.into(), instructions, None);
 		let instructions_req_msg: PromptModelRequest<T> = instructions_ctx_msg.clone().into();
@@ -134,7 +146,9 @@ impl<T: Config> Loom<T> {
 
 				// Create new tapestry fragment
 				let mut new_tapestry_fragment = TapestryFragment::new();
-				new_tapestry_fragment.push_message(summary_ctx_msg)?;
+				new_tapestry_fragment
+					.push_message(summary_ctx_msg)
+					.map_err(Self::convert_prompt_error)?;
 
 				(new_tapestry_fragment, true)
 			} else {
@@ -150,7 +164,7 @@ impl<T: Config> Loom<T> {
 		trace!("Max completion tokens available: {:?}", max_completion_tokens);
 
 		if max_completion_tokens.is_zero() {
-			return Err(LoomError::from(WeaveError::MaxCompletionTokensIsZero).into());
+			return Err(LoomError::MaxCompletionTokensZero);
 		}
 
 		trace!("Prompting LLM with request messages");
@@ -165,10 +179,7 @@ impl<T: Config> Loom<T> {
 				max_completion_tokens,
 			)
 			.await
-			.map_err(|e| {
-				error!("Failed to prompt LLM: {}", e);
-				e
-			})?;
+			.map_err(T::convert_llm_error)?;
 
 		// Add LLM response to the tapestry fragment messages to save
 		msgs.push(Self::build_context_message(
@@ -208,7 +219,7 @@ impl<T: Config> Loom<T> {
 		summary_model_config: &LlmConfig<T, T::SummaryModel>,
 		tapestry_fragment: &TapestryFragment<T>,
 		summary_max_tokens: SummaryModelTokens<T>,
-	) -> Result<String, LoomError> {
+	) -> Result<String, LoomError<T::LlmError>> {
 		trace!(
 			"Generating summary with max tokens: {:?}, for tapestry fragment: {:?}",
 			summary_max_tokens,
@@ -233,10 +244,7 @@ impl<T: Config> Loom<T> {
 				summary_max_tokens,
 			)
 			.await
-			.map_err(|e| {
-				error!("Failed to prompt LLM: {}", e);
-				e
-			})?;
+			.map_err(T::convert_llm_summary_error)?;
 
 		let summary_response_content = res.into();
 

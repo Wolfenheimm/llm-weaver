@@ -58,26 +58,32 @@ impl From<WrapperRole> for String {
 	}
 }
 
+#[derive(Debug)]
+pub struct LlmErrorWrapper<E>(pub E);
+impl<E: std::error::Error + 'static> std::fmt::Display for LlmErrorWrapper<E> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "LLM error: {}", self.0)
+	}
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for LlmErrorWrapper<E> {}
+
+impl<E: std::error::Error + 'static> From<E> for LlmErrorWrapper<E> {
+	fn from(err: E) -> Self {
+		LlmErrorWrapper(err)
+	}
+}
+
 #[derive(Debug, thiserror::Error)]
-pub enum LoomError {
-	#[error("Weave error: {0}")]
-	Weave(#[from] WeaveError),
+pub enum LoomError<E: std::error::Error + 'static> {
+	#[error("LLM error: {0}")]
+	Llm(#[from] LlmErrorWrapper<E>),
 	#[error("Storage error: {0}")]
 	Storage(#[from] StorageError),
 	#[error("Error: {0}")]
 	UnknownError(String),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum WeaveError {
-	#[error("Exceeds max prompt tokens")]
-	MaxCompletionTokensIsZero,
-	#[error("Bad configuration: {0}")]
-	BadConfig(String),
-	#[error("Not enough credits to cover cost")]
-	NotEnoughCredits,
-	#[error("Unknown error: {0}")]
-	Unknown(String),
+	#[error("Max completion tokens is zero")]
+	MaxCompletionTokensZero,
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -73,11 +73,12 @@ mod mock;
 mod tests;
 
 pub use storage::TapestryChestHandler;
-use types::{LoomError, SummaryModelTokens, WeaveError};
+use types::{LoomError, StorageError, SummaryModelTokens};
 
 use crate::types::{PromptModelTokens, WrapperRole};
 
-pub type Result<T> = std::result::Result<T, LoomError>;
+pub type Result<T, E> = std::result::Result<T, LoomError<E>>;
+pub type StorageResult<T> = std::result::Result<T, LoomError<StorageError>>;
 
 /// Represents a unique identifier for any arbitrary entity.
 ///
@@ -162,6 +163,8 @@ pub trait Llm<T: Config>:
 	type Response: Clone + Into<Option<String>> + Send;
 	/// Type representing the parameters for a prompt.
 	type Parameters: Debug + Clone + Send + Sync;
+	/// Type representing the error that can occur when prompting the LLM.
+	type PromptError: std::error::Error + Into<T::LlmError> + 'static;
 
 	/// The maximum number of tokens that can be processed at once by an LLM model.
 	fn max_context_length(&self) -> Self::Tokens;
@@ -178,7 +181,7 @@ pub trait Llm<T: Config>:
 	/// Calculates the number of tokens in a string.
 	///
 	/// This may vary depending on the type of tokens used by the LLM. In the case of ChatGPT, can be calculated using the [tiktoken-rs](https://github.com/zurawiki/tiktoken-rs#counting-token-length) crate.
-	fn count_tokens(content: &str) -> Result<Self::Tokens>;
+	fn count_tokens(content: &str) -> Result<Self::Tokens, Self::PromptError>;
 	/// Prompt LLM with the supplied messages and parameters.
 	async fn prompt(
 		&self,
@@ -187,7 +190,7 @@ pub trait Llm<T: Config>:
 		msgs: Vec<Self::Request>,
 		params: &Self::Parameters,
 		max_tokens: Self::Tokens,
-	) -> Result<Self::Response>;
+	) -> Result<Self::Response, Self::PromptError>;
 	/// Compute cost of a message based on model.
 	fn compute_cost(&self, prompt_tokens: Self::Tokens, response_tokens: Self::Tokens) -> f64;
 	/// Calculate the upperbound of tokens allowed for the current [`Config::PromptModel`] before a
@@ -248,6 +251,20 @@ pub trait Config: Debug + Sized + Clone + Default + Send + Sync + 'static {
 	/// You can optionally enable the `redis` or `rocksdb` features to use the default storage
 	/// implementations for these storage backends.
 	type Chest: TapestryChestHandler<Self>;
+	/// Error type for the LLM.
+	///
+	/// Used to convert the [`LoomError`] to a custom error type.
+	type LlmError: std::error::Error + 'static;
+
+	/// Convert the LLM error to a custom error type.
+	fn convert_llm_error(
+		error: LoomError<<Self::PromptModel as Llm<Self>>::PromptError>,
+	) -> LoomError<Self::LlmError>;
+
+	/// Convert the LLM summary error to a custom error type.
+	fn convert_llm_summary_error(
+		error: LoomError<<Self::SummaryModel as Llm<Self>>::PromptError>,
+	) -> LoomError<Self::LlmError>;
 
 	/// Convert [`Config::PromptModel`] to [`Config::SummaryModel`] tokens.
 	fn convert_prompt_tokens_to_summary_model_tokens(
@@ -301,12 +318,13 @@ impl<T: Config> TapestryFragment<T> {
 	/// Add a [`ContextMessage`] to the `context_messages` list.
 	///
 	/// Also increments the `context_tokens` by the number of tokens in the message.
-	fn push_message(&mut self, msg: ContextMessage<T>) -> Result<()> {
+	fn push_message(
+		&mut self,
+		msg: ContextMessage<T>,
+	) -> Result<(), <T::PromptModel as Llm<T>>::PromptError> {
 		let tokens = T::PromptModel::count_tokens(&msg.content)?;
 		let new_token_count = self.context_tokens.checked_add(&tokens).ok_or_else(|| {
-			LoomError::from(WeaveError::BadConfig(
-				"Number of tokens exceeds max tokens for model".to_string(),
-			))
+			LoomError::UnknownError("Number of tokens exceeds max tokens for model".to_string())
 		})?;
 
 		trace!("Pushing message: {:?}, new token count: {}", msg, new_token_count);
@@ -319,7 +337,10 @@ impl<T: Config> TapestryFragment<T> {
 	/// Add a [`ContextMessage`] to the `context_messages` list.
 	///
 	/// Also increments the `context_tokens` by the number of tokens in the message.
-	fn extend_messages(&mut self, msgs: Vec<ContextMessage<T>>) -> Result<()> {
+	fn extend_messages(
+		&mut self,
+		msgs: Vec<ContextMessage<T>>,
+	) -> Result<(), <T::PromptModel as Llm<T>>::PromptError> {
 		let total_new_tokens = msgs
 			.iter()
 			.map(|m| T::PromptModel::count_tokens(&m.content).unwrap())
@@ -332,9 +353,7 @@ impl<T: Config> TapestryFragment<T> {
 		trace!("Extending messages with token sum: {}", sum);
 
 		let new_token_count = self.context_tokens.checked_add(&sum).ok_or_else(|| {
-			LoomError::from(WeaveError::BadConfig(
-				"Number of tokens exceeds max tokens for model".to_string(),
-			))
+			LoomError::UnknownError("Number of tokens exceeds max tokens for model".to_string())
 		})?;
 
 		// Update the token count and messages only if all checks pass

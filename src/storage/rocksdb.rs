@@ -8,7 +8,7 @@ use std::{
 	sync::{Arc, Mutex},
 };
 
-use crate::{types::StorageError, Config, Result, TapestryFragment, TapestryId};
+use crate::{types::StorageError, Config, Result, StorageResult, TapestryFragment, TapestryId};
 
 use super::TapestryChestHandler;
 
@@ -26,7 +26,7 @@ pub struct RocksDbBackend {
 }
 
 impl RocksDbBackend {
-	pub fn new() -> Result<Self> {
+	pub fn new() -> StorageResult<Self> {
 		let mut db_instance = DB_INSTANCE.lock().unwrap();
 
 		if let Some(db) = db_instance.as_ref() {
@@ -39,7 +39,7 @@ impl RocksDbBackend {
 		Ok(Self { db })
 	}
 
-	fn initialize_db() -> Result<Arc<OptimisticTransactionDB>> {
+	fn initialize_db() -> StorageResult<Arc<OptimisticTransactionDB>> {
 		let mut opts = Options::default();
 		opts.create_if_missing(true);
 		opts.create_missing_column_families(true);
@@ -70,9 +70,9 @@ impl RocksDbBackend {
 			.map_err(|e| StorageError::DatabaseError(e.to_string()).into())
 	}
 
-	fn transaction<F, T>(&self, func: F) -> Result<T>
+	fn transaction<F, T>(&self, func: F) -> StorageResult<T>
 	where
-		F: FnOnce(&mut RocksDbTransaction) -> Result<T>,
+		F: FnOnce(&mut RocksDbTransaction) -> StorageResult<T>,
 	{
 		let txn = self.db.transaction();
 		let mut txn_backend = RocksDbTransaction { txn, db: Arc::clone(&self.db) };
@@ -91,7 +91,7 @@ struct RocksDbTransaction<'a> {
 }
 
 impl<'a> RocksDbTransaction<'a> {
-	fn get_cf(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
+	fn get_cf(&self, cf: &str, key: &[u8]) -> StorageResult<Option<Vec<u8>>> {
 		let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
 			StorageError::DatabaseError(format!("Column family not found: {}", cf))
 		})?;
@@ -100,7 +100,7 @@ impl<'a> RocksDbTransaction<'a> {
 			.map_err(|e| StorageError::DatabaseError(e.to_string()).into())
 	}
 
-	fn put_cf(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
+	fn put_cf(&self, cf: &str, key: &[u8], value: &[u8]) -> StorageResult<()> {
 		let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
 			StorageError::DatabaseError(format!("Column family not found: {}", cf))
 		})?;
@@ -109,7 +109,7 @@ impl<'a> RocksDbTransaction<'a> {
 			.map_err(|e| StorageError::DatabaseError(e.to_string()).into())
 	}
 
-	fn delete_cf(&self, cf: &str, key: &[u8]) -> Result<()> {
+	fn delete_cf(&self, cf: &str, key: &[u8]) -> StorageResult<()> {
 		let cf_handle = self.db.cf_handle(cf).ok_or_else(|| {
 			StorageError::DatabaseError(format!("Column family not found: {}", cf))
 		})?;
@@ -134,7 +134,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		tapestry_id: &TID,
 		tapestry_fragment: TapestryFragment<T>,
 		increment_index: bool,
-	) -> Result<u64> {
+	) -> StorageResult<u64> {
 		let fragment_bytes = serde_json::to_vec(&tapestry_fragment)
 			.map_err(|e| StorageError::SerializationError(e.to_string()))?;
 
@@ -173,7 +173,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		&self,
 		tapestry_id: TID,
 		metadata: M,
-	) -> Result<()> {
+	) -> StorageResult<()> {
 		let metadata_bytes = serde_json::to_vec(&metadata)
 			.map_err(|e| StorageError::SerializationError(e.to_string()))?;
 
@@ -183,7 +183,10 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		})
 	}
 
-	async fn get_instance_index<TID: TapestryId>(&self, tapestry_id: TID) -> Result<Option<u16>> {
+	async fn get_instance_index<TID: TapestryId>(
+		&self,
+		tapestry_id: TID,
+	) -> StorageResult<Option<u16>> {
 		let instance_index_key = derive_instance_index_key(&tapestry_id);
 		self.transaction(|txn| {
 			txn.get_cf(INSTANCE_INDEX_CF, instance_index_key.as_bytes())?
@@ -204,7 +207,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		&self,
 		tapestry_id: TID,
 		instance: Option<u64>,
-	) -> Result<Option<TapestryFragment<T>>> {
+	) -> StorageResult<Option<TapestryFragment<T>>> {
 		self.transaction(|txn| {
 			let instance = if let Some(i) = instance {
 				i
@@ -233,7 +236,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 	async fn get_tapestry_metadata<TID: TapestryId, M: DeserializeOwned + Send + Sync>(
 		&self,
 		tapestry_id: TID,
-	) -> Result<Option<M>> {
+	) -> StorageResult<Option<M>> {
 		let metadata_key = derive_metadata_key(&tapestry_id);
 		self.transaction(|txn| {
 			txn.get_cf(TAPESTRY_METADATA_CF, metadata_key.as_bytes())?
@@ -246,7 +249,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		})
 	}
 
-	async fn delete_tapestry<TID: TapestryId>(&self, tapestry_id: TID) -> Result<()> {
+	async fn delete_tapestry<TID: TapestryId>(&self, tapestry_id: TID) -> StorageResult<()> {
 		self.transaction(|txn| {
 			let instance_index_key = derive_instance_index_key(&tapestry_id);
 			let current_index: u64 = txn
@@ -283,7 +286,7 @@ impl<T: Config + Serialize + DeserializeOwned + Send + Sync> TapestryChestHandle
 		&self,
 		tapestry_id: TID,
 		instance: Option<u64>,
-	) -> Result<()> {
+	) -> StorageResult<()> {
 		self.transaction(|txn| {
 			let instance_index_key = derive_instance_index_key(&tapestry_id);
 			let current_index: u64 = txn
@@ -357,7 +360,8 @@ fn derive_metadata_key<TID: TapestryId>(tapestry_id: &TID) -> String {
 mod tests {
 	use super::*;
 	use crate::{
-		types::{PromptModelTokens, SummaryModelTokens, WrapperRole},
+		mock::MockPromptError,
+		types::{LoomError, PromptModelTokens, SummaryModelTokens, WrapperRole},
 		Config, ContextMessage, Llm, TapestryFragment, TapestryId,
 	};
 	use bounded_integer::BoundedU8;
@@ -379,7 +383,29 @@ mod tests {
 		type PromptModel = MockLlm;
 		type SummaryModel = MockLlm;
 		type Chest = RocksDbBackend;
+		type LlmError = StorageError; // Define LlmError as StorageError
 
+		fn convert_llm_error(
+			error: LoomError<<<Self as Config>::PromptModel as Llm<Self>>::PromptError>,
+		) -> LoomError<Self::LlmError> {
+			match error {
+				LoomError::Llm(e) => LoomError::Storage(StorageError::InternalError(e.to_string())),
+				LoomError::Storage(e) => LoomError::Storage(e),
+				LoomError::UnknownError(msg) => LoomError::UnknownError(msg),
+				LoomError::MaxCompletionTokensZero => LoomError::MaxCompletionTokensZero,
+			}
+		}
+
+		fn convert_llm_summary_error(
+			error: LoomError<<<Self as Config>::SummaryModel as Llm<Self>>::PromptError>,
+		) -> LoomError<Self::LlmError> {
+			match error {
+				LoomError::Llm(e) => LoomError::Storage(StorageError::InternalError(e.to_string())),
+				LoomError::Storage(e) => LoomError::Storage(e),
+				LoomError::UnknownError(msg) => LoomError::UnknownError(msg),
+				LoomError::MaxCompletionTokensZero => LoomError::MaxCompletionTokensZero,
+			}
+		}
 		fn convert_prompt_tokens_to_summary_model_tokens(
 			tokens: PromptModelTokens<Self>,
 		) -> SummaryModelTokens<Self> {
@@ -396,12 +422,19 @@ mod tests {
 	#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 	struct MockLlm;
 
+	impl From<MockPromptError> for StorageError {
+		fn from(error: MockPromptError) -> Self {
+			StorageError::InternalError(error.to_string())
+		}
+	}
+
 	#[async_trait]
 	impl Llm<MockConfig> for MockLlm {
 		type Tokens = u16;
 		type Request = String;
 		type Response = String;
 		type Parameters = ();
+		type PromptError = MockPromptError;
 
 		fn max_context_length(&self) -> Self::Tokens {
 			1000
@@ -415,7 +448,7 @@ mod tests {
 			"TestLlm"
 		}
 
-		fn count_tokens(content: &str) -> Result<Self::Tokens> {
+		fn count_tokens(content: &str) -> Result<Self::Tokens, Self::PromptError> {
 			Ok(content.len() as u16)
 		}
 
@@ -426,7 +459,7 @@ mod tests {
 			msgs: Vec<Self::Request>,
 			_params: &Self::Parameters,
 			_max_tokens: Self::Tokens,
-		) -> Result<Self::Response> {
+		) -> Result<Self::Response, Self::PromptError> {
 			Ok(msgs.join(" "))
 		}
 
